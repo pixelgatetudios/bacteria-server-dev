@@ -7,9 +7,9 @@ var DEBUG = true;
 
 var rooms =[];
 
-/*app.get('/', (req, res) => {
+app.get('/', (req, res) => {
   res.sendFile(__dirname + '/index.html');
-});*/
+});
 
 io.on('connection', (socket) => {
   if(DEBUG)console.log('a user connected');
