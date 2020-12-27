@@ -1,78 +1,109 @@
-const DEBUG = true;
+var app = require('express')();
+var http = require('http').createServer(app);
+var io = require('socket.io')(http);
 
-const uWS = require("uWebSockets.js");
-const port = 8080;
+var PORT = 8080;
+var DEBUG = true;
 
-const app = uWS
-  .App()
-  .ws("/*", {
-    /* Options */
-    compression: uWS.SHARED_COMPRESSOR,
-    maxPayloadLength: 16 * 1024 * 1024,
-    idleTimeout: 0,
-    maxBackpressure: 1024,
+var rooms =[];
 
-    /* Todo, Setting 1: merge messages in one, or keep them as separate WebSocket frames - mergePublishedMessages */
-    /* Todo, Setting 4: send to all including us, or not? That's not a setting really just use ws.publish or global uWS.publish */
+/*app.get('/', (req, res) => {
+  res.sendFile(__dirname + '/index.html');
+});*/
 
-    /* Handlers */
-    open: (ws) => {
-      /* Let this client listen to all sensor topics */
-      //ws.subscribe('home/sensors/#');
-      console.log("open");
-    },
-    message: (ws, message, isBinary) => {
-      try {
-        // on convertit le message en chaine de caractère
-        const stringMessage = Buffer.from(message).toString("utf8");
-        if (DEBUG) console.log(stringMessage);
-        // On décode le message JSON
-        const jsonMessage = JSON.parse(stringMessage);
-        // On envoi le message au routeur
-        dispatchMessage(ws, jsonMessage);
-      } catch (error) {
-        console.error("onNewMessage " + error);
-      }
-    },
-    drain: (ws) => {},
-    close: (ws, code, message) => {
-      /* The library guarantees proper unsubscription at close */
+io.on('connection', (socket) => {
+  if(DEBUG)console.log('a user connected');
 
-      console.log("close");
-    },
-  })
-  .any("/*", (res, req) => {
-    res.end("Nothing to see here!");
-  })
-  .listen(port, (token) => {
-    if (token) {
-      console.log("Listening to port " + port);
-    } else {
-      console.log("Failed to listen to port " + port);
+  socket.on('join', (args) => {
+    const info = JSON.parse(args);
+    socket.matchId = info.mid;
+    //socket.join(`game/${info.mid}`);
+    socket.join(`game/${socket.matchId}`);
+    
+    let room = rooms[info.mid];
+    if(room == undefined){
+        // Creation de la room si elle n'existe pas
+        if(DEBUG)console.log("Creation de la room "+info.mid)
+        rooms[info.mid]= {
+        boardTypeId: 1,
+        firstPlayerIndex: (Math.floor(Math.random() * 2)),
+        totalPlayers: parseInt(info.totalPlayers),
+        players: [],
+        lastPlayerId: -1,
+        };
+    }
+    // Ajout du player 
+    socket.pid = info.pid;
+    socket.playerName = info.playerName;
+    socket.gameId = rooms[info.mid].players.length;
+    rooms[info.mid].players.push({ 
+        id: rooms[info.mid].players.length,
+        playerName: info.playerName,
+        pid: info.pid,
+    });
+
+    // Verification room complete
+    if(rooms[info.mid].players.length == rooms[info.mid].totalPlayers)
+    {
+        // Lance la partie
+        if(DEBUG) console.log(`Start game ${info.mid}`);
+        io.to(`game/${info.mid}`).emit('start', rooms[info.mid]);
+    }
+
+  });
+
+  socket.on('leftRoom', (args) => {
+    if(socket.matchId != undefined){
+        if(DEBUG) console.log('a user left room '+socket.matchId); 
+        socket.leave(`game/${socket.matchId}`);
+        RemovePlayerFromRoom(socket.matchId, socket.gameId);
+        io.to(`game/${socket.matchId}`).emit('userLeft', socket.playerName, socket.pid, socket.gameId);
+        socket.matchId = undefined;
+        socket.gameId = undefined;
     }
   });
 
-function dispatchMessage(ws, message) {
-  switch (message.t) {
-    case 0: //
-      break;
-    case 1: // Join Game
-      joinGame(ws, message);
-      break;
-    case 1: // Player play
-      play(ws, message);
-      break;
-    default:
-      if (DEBUG) console.log("type inconnu");
-  }
+  socket.on('add', (args) => {
+    const info = JSON.parse(args);
+    if(DEBUG) console.log("Player "+ info.id+" clic on "+info.loc.x+","+info.loc.y);
+    rooms[socket.matchId].lastPlayerId = info.id;
+    io.to(`game/${socket.matchId}`).emit('msg', args);
+  });
+
+  socket.on("disconnect", () => {
+    if(DEBUG) console.log('a user disconnected'); 
+    if(socket.matchId != undefined){
+        socket.leave(`game/${socket.matchId}`);
+        RemovePlayerFromRoom(socket.matchId, socket.gameId);
+        io.to(`game/${socket.matchId}`).emit('userLeft',socket.playerName, socket.pid, socket.gameId );
+        socket.matchId = undefined;
+        socket.gameId = undefined;
+    }
+  });
+});
+
+function RemovePlayerFromRoom(roomId, playerGameId){
+    if(rooms[roomId]== undefined)return;
+    DeleteArrayElement(rooms[roomId].players, playerGameId);
+    if(rooms[roomId].players.length == 0){
+        DeleteRoom(roomId);
+        if(DEBUG) console.log('Suppression de la room '+roomId);
+    }
 }
 
-function joinGame(ws, message) {
-  if (DEBUG) console.log("join");
-  ws.game = message.mi;
-  ws.subscribe(`game/${message.mi}`);
+function DeleteRoom(matchId){
+    const index = rooms.indexOf(matchId);
+    if (index > -1) {
+        rooms.splice(index, 1);
+    }
 }
-function play(ws, message) {
-  if (DEBUG) console.log("play");
-  ws.publish(`game/${ws.game}`, JSON.stringify(message));
+function DeleteArrayElement(array, index){
+    const _index = array.findIndex(a => a.id === index);
+    if (_index > -1) {
+        array.splice(_index, 1);
+    }
 }
+
+http.listen(PORT, () => {
+  console.log(`listening on *:${PORT}`);
+});
